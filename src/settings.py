@@ -13,6 +13,7 @@ class SelectionSettings(BaseSettings):
 class Settings(BaseSettings):
     selection: SelectionSettings = SelectionSettings()
     db_url: str = "sqlite:///./dump/daily_dose.db"
+    root_path: str = "/api"
 
     model_config = SettingsConfigDict(
         env_file=(".env", ".env.prod"),
