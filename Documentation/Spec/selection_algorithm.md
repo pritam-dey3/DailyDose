@@ -11,8 +11,11 @@ The selection process uses a **Dynamic Urgency Auction** model. Instead of rigid
       - $D = 1.0$: Standard aging (1 day of pressure).
       - $D > 1.0$: High importance. The item appears to age faster than real time, accumulating pressure quickly (e.g., $D=2$ means 1 day feels like 2 days).
       - $D < 1.0$: Low importance. The item ages slowly, being surpassed by standard items (e.g., $D=0.5$ means 2 days feel like 1 day).
-    - **Quota Pressure (Q):** If a dose has a hard constraint (e.g., `at-least 3/week`) and the deadline is approaching, the score skyrockets.
+    - **Quota Pressure (Q):** Applied to all frequency types (`at-least`, `example`, `at-most`). If a dose has a constraint and the deadline is approaching to meet the target count, the score skyrockets.
       $$\frac{\text{1 }}{\text{digests remaining} - \text{doses remaining}}$$
+      - **Target Logic:** For all types, `doses remaining` is calculated as `target_count - current_count`.
+          - If `doses remaining <= 0` (quota met or exceeded), $Q = 0$.
+          - Else, Q increases as the opportunity window closes.
       - _Critical Fix:_ If `doses remaining` >= `digests remaining` (the user is behind schedule), $Q$ becomes $\infty$. This prevents the logic inversion where missed deadlines yield negative numbers.
 
     Final pressure $P = (T \cdot D) + \alpha\cdot Q$. Where $\alpha$ is a user-configurable constant. Users tune this to determine how aggressively "behind schedule" items displace "high interest" items (balancing Quota catch-up vs. regular browsing).
@@ -23,7 +26,7 @@ The selection process uses a **Dynamic Urgency Auction** model. Instead of rigid
     - **Weighted Sampling:** Any remaining slots are filled by **Weighted Random Sampling** of the Urgency Scores.
 
 3.  **The Relief (Reset)**
-    - Selected doses have their "pressure" released. Their `count_in_current_period` increments, and doses remaining counters decrement. This allows them to re-enter the auction cycle later with fresh urgency.
+    - Selected doses have their "pressure" released. Their `count_in_current_period` increments, along with `last_digest_datetime` being updated to the current digest time. This allows them to re-enter the auction cycle later with fresh urgency.
     - Unselected doses keep their pressure, making them more likely to "win" the auction tomorrow.
 
 4.  **Initialization & Configuration**

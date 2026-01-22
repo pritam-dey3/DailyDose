@@ -72,4 +72,4 @@ doses:
 We need a minimal state engine to track history and enforce quotas.
 
 - **History Log:**
-  - Structure: `{ dose_id: count_in_current_period }`
+  - Structure: `{ dose_id: count_in_current_period, last_digest_datetime }`

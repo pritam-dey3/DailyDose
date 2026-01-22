@@ -1,12 +1,13 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import DateTime, Field, SQLModel, func
 
 
 class FrequencyType(str, Enum):
     AT_LEAST = "at-least"
     EXACTLY = "exactly"
+    AT_MOST = "at-most"
 
 
 class FrequencyPeriod(str, Enum):
@@ -41,3 +42,9 @@ class History(SQLModel, table=True):
 
     dose_id: str = Field(primary_key=True, foreign_key="doses.id")
     count_in_current_period: int = Field(default=0)
+    last_digest_datetime: datetime | None = Field(
+        default=None,
+        sa_type=DateTime(timezone=True),  # type: ignore
+        sa_column_kwargs={"server_default": func.now()},
+        nullable=False,
+    )

@@ -1,116 +1,116 @@
+import calendar
+import math
 import random
+from collections.abc import Sequence
 from datetime import datetime
-from typing import List, Optional, Sequence, Tuple
 
 from sqlmodel import Session, select
 
-from src.db.models import Dose, FrequencyPeriod, FrequencyType, History, Tag
+from src.db.models import Dose, FrequencyPeriod, History, Tag
 from src.settings import settings
 
 
-def get_days_remaining_in_week(current_date: datetime) -> int:
+def get_digests_remaining_in_period(
+    current_datetime: datetime, period: FrequencyPeriod, digest_timings: list[str]
+) -> int:
     """
-    Returns the number of days remaining in the current week (Sunday to Saturday),
-    including the current day.
-    Week is Sunday to Saturday.
-    Python weekday(): Mon=0, ..., Sat=5, Sun=6.
-    If today is Sunday (6), remaining is 7.
-    If today is Monday (0), remaining is 6 (Mon, Tue, Wed, Thu, Fri, Sat).
-    If today is Saturday (5), remaining is 1 (Sat).
+    Returns the number of digest opportunities remaining in the frequency period.
     """
-    wd = current_date.weekday()
-    if wd == 6:  # Sunday
-        return 7
-    return 6 - wd
+    # 1. Calculate remaining digests today
+    current_time_str = current_datetime.strftime("%H:%M")
+    remaining_today = sum(1 for t in digest_timings if t > current_time_str)
+
+    daily_slots = len(digest_timings)
+
+    if period == FrequencyPeriod.DAY:
+        return remaining_today
+
+    elif period == FrequencyPeriod.WEEK:
+        # Week ends on Saturday.
+        wd = current_datetime.weekday()  # Mon=0, ..., Sat=5, Sun=6
+
+        days_in_week_including_today = 7 if wd == 6 else (6 - wd)
+        future_days = days_in_week_including_today - 1
+        return remaining_today + (future_days * daily_slots)
+
+    elif period == FrequencyPeriod.MONTH:
+        # Days remaining in month
+        _, last_day = calendar.monthrange(current_datetime.year, current_datetime.month)
+        future_days = last_day - current_datetime.day
+        return remaining_today + (future_days * daily_slots)
+
+    else:
+        raise ValueError(f"Unknown FrequencyPeriod: {period}")
 
 
 def calculate_urgency_score(
     dose: Dose,
-    history: Optional[History],
+    history: History | None,
     tag: Tag,
     current_date: datetime,
     alpha: float,
-) -> Tuple[float, bool]:
+    digest_timings: list[str],
+) -> float:
     """
     Calculates the urgency score for a dose.
-    Returns (score, is_infinite).
+    Returns score.
     """
     # 1. Time Pressure (T)
-    # Score increases linearly over time since last shown.
-    # Note: last_notified has been removed from History, so T is temporarily 0.
     T = 0.0
+    if history and history.last_digest_datetime:
+        # Calculate days elapsed
+        delta = current_date.date() - history.last_digest_datetime.date()
+        T = max(0.0, float(delta.days))
 
     # 2. Demand (D)
     D = tag.demand
 
     # 3. Quota Pressure (Q)
-    Q = 0.0
-    is_infinite = False
+    digests_remaining = get_digests_remaining_in_period(
+        current_date, dose.frequency_period, digest_timings
+    )
 
-    if dose.frequency_type == FrequencyType.AT_LEAST:
-        # Compute digests_remaining
-        if dose.frequency_period == FrequencyPeriod.WEEK:
-            digests_remaining = get_days_remaining_in_week(current_date)
-        elif dose.frequency_period == FrequencyPeriod.DAY:
-            # If daily quota, and we haven't met it?
-            # Assuming 1 digest per day.
-            digests_remaining = 1
-        elif dose.frequency_period == FrequencyPeriod.MONTH:
-            # Approximation for month?
-            # For now, let's just ignore or implement simple logic.
-            # Let's assume month ends at end of calendar month.
-            # tough without calendar utils.
-            # Fallback: treat as large number so Q is small unless urgent
-            # But let's look at the implementation. The user specifically mentioned week cycle.
-            # I'll stick to week logic for now or generic duration.
-            # Let's approximate month as 30 days? No, better to be strict or skip.
-            # I'll implement "days remaining in month".
-            # Month end: (current_date.month % 12 + 1) -> 1st of next month - 1 day.
-            # ...
-            # For simplicity, if not WEEK, set digests_remaining to a safe large value to avoid infinity,
-            # unless it's DAY.
-            digests_remaining = 30  # Placeholder if not implemented
-            pass
+    current_count = history.count_in_current_period if history else 0
+    doses_remaining = dose.frequency_count - current_count
+
+    if doses_remaining <= 0:
+        Q = 0.0  # Quota met
+    else:
+        if doses_remaining >= digests_remaining:
+            Q = float("inf")
         else:
-            digests_remaining = 100  # Default
-
-        current_count = history.count_in_current_period if history else 0
-        doses_remaining = dose.frequency_count - current_count
-
-        if doses_remaining <= 0:
-            Q = 0.0  # Quota met
-        else:
-            if doses_remaining >= digests_remaining:
-                Q = float("inf")
-                is_infinite = True
-            else:
-                Q = 1.0 / (digests_remaining - doses_remaining)
+            Q = 1.0 / (digests_remaining - doses_remaining)
 
     # Final Pressure P
-    if is_infinite:
-        P = float("inf")
-    else:
-        P = (T * D) + (alpha * Q)
+    P = (T * D) + (alpha * Q)
 
-    return P, is_infinite
+    return P
 
 
 def select_doses(
-    doses_data: Sequence[Tuple[Dose, Optional[History], Tag]],
+    doses_data: Sequence[tuple[Dose, History | None, Tag]],
     current_date: datetime,
     settings_alpha: float = 10.0,
     digest_size: int = 5,
-) -> List[Dose]:
+    digest_timings: list[str] | None = None,
+) -> list[Dose]:
     """
     Performs the auction and selection.
     """
+    if digest_timings is None:
+        digest_timings = settings.selection.digest_timings
+
     # 1. Metric Application
     scored_items = []
     for dose, history, tag in doses_data:
-        score, is_infinite = calculate_urgency_score(
-            dose, history, tag, current_date, settings_alpha
+        score = calculate_urgency_score(
+            dose, history, tag, current_date, settings_alpha, digest_timings
         )
-        scored_items.append({"dose": dose, "score": score, "is_infinite": is_infinite})
+        scored_items.append({
+            "dose": dose,
+            "score": score,
+            "is_infinite": math.isinf(score),
+        })
 
     # 2. The Auction
     priority_items = [item for item in scored_items if item["is_infinite"]]
@@ -191,7 +191,7 @@ def select_doses(
 
 def generate_daily_digest(
     session: Session, current_date: datetime = datetime.now()
-) -> List[Dose]:
+) -> list[Dose]:
     # Fetch all active doses, history, tags
     # Join queries
     statement = select(Dose, History, Tag).outerjoin(History).join(Tag)
@@ -199,7 +199,11 @@ def generate_daily_digest(
 
     # Run selection
     selected_doses = select_doses(
-        results, current_date, settings.selection.alpha, settings.selection.digest_size
+        results,
+        current_date,
+        settings.selection.alpha,
+        settings.selection.digest_size,
+        settings.selection.digest_timings,
     )
 
     # 3. The Relief (Reset)
@@ -210,8 +214,8 @@ def generate_daily_digest(
             history = History(dose_id=dose.id, count_in_current_period=0)
             session.add(history)
 
-        # Reset last_notified
-        # history.last_notified = current_date
+        # Update last_digest_datetime
+        history.last_digest_datetime = current_date
 
         # Update counters
         # Spec: "doses remaining counters decrement".

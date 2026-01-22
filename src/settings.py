@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class SelectionSettings(BaseSettings):
     alpha: float = 10.0
     digest_size: int = 5
+    digest_timings: list[str] = ["08:00", "12:00", "18:00"]
     default_last_notified: Literal["random", "zero"] = "zero"
 
 
@@ -19,5 +20,6 @@ class Settings(BaseSettings):
         extra="ignore",
         env_nested_delimiter="__",
     )
+
 
 settings = Settings()
