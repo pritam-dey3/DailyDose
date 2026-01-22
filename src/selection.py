@@ -1,9 +1,9 @@
 import calendar
 import math
-import random
 from collections.abc import Sequence
 from datetime import datetime
 
+from more_itertools import sample
 from sqlmodel import Session, select
 
 from src.db.models import Dose, FrequencyPeriod, History, Tag
@@ -109,81 +109,39 @@ def select_doses(
         scored_items.append({
             "dose": dose,
             "score": score,
-            "is_infinite": math.isinf(score),
         })
 
     # 2. The Auction
-    priority_items = [item for item in scored_items if item["is_infinite"]]
-    normal_items = [item for item in scored_items if not item["is_infinite"]]
+    priority_items = [item for item in scored_items if math.isinf(item["score"])]
+    normal_items = [item for item in scored_items if item not in priority_items]
 
     selected_doses = []
+    selected_doses.extend([item["dose"] for item in priority_items])
 
     # Priority Selection
     # Slot Overload Policy: If infinite items > limit, ignore limit and send ALL.
-    if len(priority_items) > digest_size:
+    if len(selected_doses) > digest_size:
         return [item["dose"] for item in priority_items]
 
-    selected_doses.extend([item["dose"] for item in priority_items])
     remaining_slots = digest_size - len(selected_doses)
 
     # Weighted Sampling
     if remaining_slots > 0 and normal_items:
-        # Filter out 0 scores or negative? Spec says "score that rises".
-        # If score is 0, probability is 0.
         # Weighted random sampling.
-        weights = [max(0, item["score"]) for item in normal_items]
-        candidates = [item["dose"] for item in normal_items]
+        candidates = []
+        weights = []
 
-        # If all weights are 0, we can't sample based on weights.
-        # Either pick random or none.
-        if sum(weights) == 0:
-            # Fallback: Random sample if any candidates? Or just pick none?
-            # If pressure is 0, maybe they shouldn't be picked.
-            # But "Option A: 0 (starts fresh)". If everything is fresh, nothing gets picked?
-            # That seems wrong. Randomly pick if all 0?
-            if len(candidates) > 0:
-                # Pick uniformly
-                chosen = random.sample(
-                    candidates, k=min(remaining_slots, len(candidates))
-                )
-                selected_doses.extend(chosen)
-        else:
-            # random.choices is with replacement. We want without replacement.
-            # Using weights.
-            # Implementation of weighted sample without replacement:
-            # Easiest: Use numpy.random.choice(replace=False).
-            # But we might not want numpy dependency.
-            # Algorithm: A-Res, or repeated extraction.
-            # Since N is small, we can just do repeated extraction.
+        for item in normal_items:
+            w = item["score"]
+            # Filter for positive weights
+            if w > 0:
+                candidates.append(item["dose"])
+                weights.append(w)
 
-            chosen = []
-            available_items = list(zip(candidates, weights))
-
-            for _ in range(remaining_slots):
-                if not available_items:
-                    break
-
-                total_weight = sum(w for _, w in available_items)
-                if total_weight == 0:
-                    # Remainder uniform
-                    items_left = [i for i, _ in available_items]
-                    chosen.extend(
-                        random.sample(
-                            items_left,
-                            k=min(len(items_left), remaining_slots - len(chosen)),
-                        )
-                    )
-                    break
-
-                r = random.uniform(0, total_weight)
-                upto = 0
-                for i, (dose, w) in enumerate(available_items):
-                    if upto + w >= r:
-                        chosen.append(dose)
-                        available_items.pop(i)
-                        break
-                    upto += w
-
+        if candidates:
+            # We can't ask for more items than we have candidates
+            k = min(len(candidates), remaining_slots)
+            chosen = sample(candidates, k=k, weights=weights)
             selected_doses.extend(chosen)
 
     return selected_doses
@@ -218,9 +176,6 @@ def generate_daily_digest(
         history.last_digest_datetime = current_date
 
         # Update counters
-        # Spec: "doses remaining counters decrement".
-        # History stores "count_in_current_period".
-        # So we increment count_in_current_period.
         history.count_in_current_period += 1
 
         session.add(history)
