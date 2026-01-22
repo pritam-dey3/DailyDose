@@ -8,7 +8,7 @@ The selection process uses a **Dynamic Urgency Auction** model. Instead of rigid
     For every digest, the system calculates an **Urgency Score** for every active dose in the library.
     - **Time Pressure (T):** The primary unit of pressure is **Days**. For flexible frequencies, the score increases linearly over time since last shown.
     - **Demand (D):** Derived from tag configuration. This acts as a multiplier on time, determining how fast a dose "ages" relative to wall-clock time.
-      - $D = 1.0$: Standard aging (1 day = 1 day of pressure).
+      - $D = 1.0$: Standard aging (1 day of pressure).
       - $D > 1.0$: High importance. The item appears to age faster than real time, accumulating pressure quickly (e.g., $D=2$ means 1 day feels like 2 days).
       - $D < 1.0$: Low importance. The item ages slowly, being surpassed by standard items (e.g., $D=0.5$ means 2 days feel like 1 day).
     - **Quota Pressure (Q):** If a dose has a hard constraint (e.g., `at-least 3/week`) and the deadline is approaching, the score skyrockets.
@@ -23,12 +23,12 @@ The selection process uses a **Dynamic Urgency Auction** model. Instead of rigid
     - **Weighted Sampling:** Any remaining slots are filled by **Weighted Random Sampling** of the Urgency Scores.
 
 3.  **The Relief (Reset)**
-    - Selected doses have their "pressure" released. Their internal `last_seen` timer resets, and doses remaining counters decrement. This allows them to re-enter the auction cycle later with fresh urgency.
+    - Selected doses have their "pressure" released. Their `count_in_current_period` increments, and doses remaining counters decrement. This allows them to re-enter the auction cycle later with fresh urgency.
     - Unselected doses keep their pressure, making them more likely to "win" the auction tomorrow.
 
 4.  **Initialization & Configuration**
     - **Week Cycle:** The week is fixed as **Sunday to Saturday**.
-    - **New Items:** When a new dose is added in the middle of a week, its `last_seen` value is initialized based on user preference:
+    - **New Items:** When a new dose is added in the middle of a week, its `count_in_current_period` value is initialized based on user preference:
       - Option A: `0` (starts fresh).
       - Option B: `random(0, n)` (simulates history to stagger new items entering the pool).
     - **Quota Proration:** Quotas are **not** prorated for items added mid-week. If a "3/week" item is added on Friday, the system will attempt to fulfill the entire quota in the remaining days. This is by design.
