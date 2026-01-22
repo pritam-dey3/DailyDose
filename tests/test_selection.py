@@ -122,15 +122,22 @@ def test_urgency_score_demand_multiplier():
     dose = create_dose()
     tag = create_tag(demand=2.0)  # High demand
     current_date = datetime(2023, 10, 25)
-    # history = create_history(last_notified=last)
 
-    # T=0 (was 2). D=2. T*D = 0.
-    # Q = 0.333
-    history = create_history(count=0)
+    # Time pressure ensures demand multiplier has an effect
+    # T=2 days. D=2. T*D = 4.
+    last_shown = current_date - timedelta(days=2)
+    history = create_history(count=0, last_digest_datetime=last_shown)
+
+    # Calculate expected Quota pressure
+    # Wed -> Rem = 4 slots (using TIMINGS_1_PER_DAY).
+    # Doses rem = 1.
+    # Q = 1 / (4 - 1) = 0.333
+    # P = (2 * 2) + (1.0 * 0.333) = 4.333
+
     score = calculate_urgency_score(
         dose, history, tag, current_date, alpha=1.0, digest_timings=TIMINGS_1_PER_DAY
     )
-    assert score == pytest.approx(0.333, 0.01)
+    assert score == pytest.approx(4.333, 0.01)
 
 
 def test_urgency_score_quota_infinite():
@@ -197,34 +204,67 @@ def test_auction_weighted_sampling():
     # 1 priority, 2 normal slots left (size 3).
     # Normal items with different scores.
 
-    # Inf
-    d1 = create_dose(id="1", freq_count=10)
+    # Priority Item (Infinite Score due to quota overflow)
+    d_priority = create_dose(id="1", freq_count=10)
 
-    # Normal
-    d2 = create_dose(id="2")  # Score low
-    d3 = create_dose(id="3")  # Score high
+    # Normal Items
+    d_low = create_dose(id="low", tag_name="low_demand")
+    d_high = create_dose(id="high", tag_name="high_demand")
 
-    t_normal = create_tag(demand=1.0)
+    tag_low = create_tag(name="low_demand", demand=1.0)
+    tag_high = create_tag(name="high_demand", demand=10.0)  # High multiplier
+
     current_date = datetime(2023, 10, 25)  # Wed
 
-    # d2: T=0
-    h2 = create_history(dose_id="2", count=0)
-    # d3: T=0
-    h3 = create_history(dose_id="3", count=0)
+    # Give both some time pressure so demand multiplier works
+    last_shown = current_date - timedelta(days=2)
+    h_low = create_history(dose_id="low", count=0, last_digest_datetime=last_shown)
+    h_high = create_history(dose_id="high", count=0, last_digest_datetime=last_shown)
 
-    doses_data = [(d1, None, t_normal), (d2, h2, t_normal), (d3, h3, t_normal)]
-
-    # Repeat many times to check if d3 is picked more often than d2 theoretically,
-    # but here we just check if selection works.
-
-    selected = select_doses(
-        doses_data, current_date, digest_size=2, digest_timings=TIMINGS_1_PER_DAY
+    # Ensure scores are significantly different
+    # Low: T=2, D=1 => P ~ 2 + Q
+    # High: T=2, D=10 => P ~ 20 + Q
+    score_low = calculate_urgency_score(
+        d_low, h_low, tag_low, current_date, 1.0, TIMINGS_1_PER_DAY
     )
+    score_high = calculate_urgency_score(
+        d_high, h_high, tag_high, current_date, 1.0, TIMINGS_1_PER_DAY
+    )
+    assert score_high > score_low * 2
 
-    # Must include d1
-    assert any(d.id == "1" for d in selected)
-    # Size 2
-    assert len(selected) == 2
+    doses_data = [
+        (d_priority, None, tag_low),
+        (d_low, h_low, tag_low),
+        (d_high, h_high, tag_high),
+    ]
+
+    # Sample multiple times to verify bias
+    # We have 2 slots. 1 is taken by priority. 1 left for normal.
+    # We expect d_high to be picked significantly more often than d_low.
+
+    high_wins = 0
+    low_wins = 0
+    iterations = 100
+
+    for _ in range(iterations):
+        selected = select_doses(
+            doses_data, current_date, digest_size=2, digest_timings=TIMINGS_1_PER_DAY
+        )
+
+        # Priority should always be there
+        selected_ids = [d.id for d in selected]
+        assert "1" in selected_ids
+
+        if "high" in selected_ids:
+            high_wins += 1
+        if "low" in selected_ids:
+            low_wins += 1
+
+    # Check that high score item prevailed efficiently
+    # Given the scores, high should win vast majority
+    assert high_wins > low_wins
+    # Being conservative with randomness, but 10x demand should result in heavy bias
+    assert high_wins > 60
 
 
 def test_integration_db_update():
